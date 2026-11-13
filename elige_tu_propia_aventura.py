@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS jugador (
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS inventario (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    objeto TEXT
+    objeto TEXT,
+    jugador_id INTEGER
 )
 """)
 
@@ -28,9 +29,18 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS decisiones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     decision TEXT,
-    escena TEXT
+    escena TEXT,
+    jugador_id INTEGER
 )
 """)
+
+# Añade la relación con el jugador a bases de datos creadas con una versión anterior.
+for tabla in ("inventario", "decisiones"):
+    cursor.execute(f"PRAGMA table_info({tabla})")
+    columnas = [columna[1] for columna in cursor.fetchall()]
+    if "jugador_id" not in columnas:
+        cursor.execute(f"ALTER TABLE {tabla} ADD COLUMN jugador_id INTEGER")
+    cursor.execute(f"UPDATE {tabla} SET jugador_id = 1 WHERE jugador_id IS NULL")
 
 conexion.commit()
 
@@ -38,19 +48,19 @@ conexion.commit()
 # ==========================================
 # 2. FUNCIONES PARA GUARDAR EL PROGRESO
 # ==========================================
-def guardar_escena(escena):
+def guardar_escena(escena, jugador_id):
     cursor.execute("""
     UPDATE jugador
     SET escena_actual = ?
-    WHERE id = 1
-    """, (escena,))
+    WHERE id = ?
+    """, (escena, jugador_id))
     conexion.commit()
 
-def guardar_decision(decision, escena):
+def guardar_decision(decision, escena, jugador_id):
     cursor.execute("""
-    INSERT INTO decisiones (decision, escena)
-    VALUES (?, ?)
-    """, (decision, escena))
+    INSERT INTO decisiones (decision, escena, jugador_id)
+    VALUES (?, ?, ?)
+    """, (decision, escena, jugador_id))
     
     conexion.commit()
 
@@ -66,9 +76,18 @@ def elegir_opcion(opciones):
     
     return eleccion
 
-def mostrar_inventario():
+def agregar_objeto(objeto, jugador_id):
+    cursor.execute("""
+    INSERT INTO inventario (objeto, jugador_id)
+    VALUES (?, ?)
+    """, (objeto, jugador_id))
+    conexion.commit()
 
-    cursor.execute("SELECT objeto FROM inventario")
+def mostrar_inventario(jugador_id):
+    cursor.execute(
+        "SELECT objeto FROM inventario WHERE jugador_id = ?",
+        (jugador_id,)
+    )
     objetos = cursor.fetchall()
 
     print("\n--- INVENTARIO ---")
@@ -82,98 +101,177 @@ def mostrar_inventario():
 
         print("No tienes objetos todavía.")
 
+def consultar_estadisticas():
+    nombre_consultado = input(
+        "\nIngresa el nombre del usuario que quieres consultar: "
+    ).strip()
+    while not nombre_consultado:
+        nombre_consultado = input(
+            "El nombre no puede estar vacío. Intenta nuevamente: "
+        ).strip()
+
+    cursor.execute("""
+    SELECT id, nombre, escena_actual
+    FROM jugador
+    WHERE nombre = ? COLLATE NOCASE
+    """, (nombre_consultado,))
+    jugadores_consultados = cursor.fetchall()
+
+    if not jugadores_consultados:
+        print(f"\nNo se encontraron estadísticas para {nombre_consultado}.")
+        return
+
+    for jugador_consultado in jugadores_consultados:
+        jugador_consultado_id = jugador_consultado[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM decisiones WHERE jugador_id = ?",
+            (jugador_consultado_id,)
+        )
+        total_decisiones = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT objeto FROM inventario WHERE jugador_id = ?",
+            (jugador_consultado_id,)
+        )
+        objetos = [fila[0] for fila in cursor.fetchall()]
+
+        print("\n================================")
+        print(f"ESTADÍSTICAS DE {jugador_consultado[1]}")
+        print("================================")
+        print("Estado de la aventura:", jugador_consultado[2])
+        print("Decisiones tomadas:", total_decisiones)
+        print("Objetos en el inventario:", ", ".join(objetos) if objetos else "Ninguno")
+
 # ==========================================
 # 3. CARGAR O CREAR UNA PARTIDA
 # ==========================================
 
-cursor.execute("SELECT * FROM jugador WHERE id = 1")
-jugador = cursor.fetchone()
+cursor.execute("SELECT COUNT(*) FROM jugador")
+hay_partidas = cursor.fetchone()[0] > 0
 
-if jugador:
-
-    print("\n¡Bienvenido nuevamente!")
-    print("Partida encontrada.")
-
-    opcion = input(
-        "\n1. Continuar partida"
-        "\n2. Empezar una nueva"
-        "\nElige: "
-    )
-
-    while opcion not in ["1", "2"]:
-        opcion = input("Opción incorrecta. Elige 1 o 2: ")
-
-    if opcion == "1":
-
-        nombre = jugador[1]
-        escena = jugador[2]
-
-        if escena == "terminado":
-
-            print("\n¡Ya completaste esta aventura!")
-
-            opcion = input(
-                "\n1. Empezar una nueva aventura"
-                "\n2. Salir"
-                "\nElige: "
-            )
-
-            while opcion not in ["1", "2"]:
-                opcion = input("Elige 1 o 2: ")
-
-            if opcion == "2":
-
-                conexion.close()
-                exit()
-
-            else:
-
-                nombre = input("\nIngresa tu nombre: ")
-                escena = "inicio"
-
-                cursor.execute("DELETE FROM inventario")
-                cursor.execute("DELETE FROM decisiones")
-
-                cursor.execute("""
-                UPDATE jugador
-                SET nombre = ?, escena_actual = ?
-                WHERE id = 1
-                """, (nombre, escena))
-
-                conexion.commit()
-
-        else:
-
-            print("\nContinuando partida de", nombre)
-
+while True:
+    if hay_partidas:
+        opciones_menu = {
+            "1": "Continuar partida",
+            "2": "Empezar una nueva",
+            "3": "Consultar estadísticas de un jugador"
+        }
     else:
+        opciones_menu = {
+            "1": "Empezar una nueva partida",
+            "2": "Consultar estadísticas de un jugador"
+        }
 
-        nombre = input("\nIngresa tu nombre: ")
+    opcion = elegir_opcion(opciones_menu)
+
+    if (hay_partidas and opcion == "3") or (not hay_partidas and opcion == "2"):
+        consultar_estadisticas()
+        continue
+
+    if hay_partidas and opcion == "1":
+        nombre_consultado = input(
+            "\nIngresa el nombre del usuario que quiere continuar: "
+        ).strip()
+        while not nombre_consultado:
+            nombre_consultado = input(
+                "El nombre no puede estar vacío. Intenta nuevamente: "
+            ).strip()
+
+        cursor.execute("""
+        SELECT id, nombre, escena_actual
+        FROM jugador
+        WHERE nombre = ? COLLATE NOCASE
+        ORDER BY id DESC
+        LIMIT 1
+        """, (nombre_consultado,))
+        partida = cursor.fetchone()
+
+        if not partida:
+            print(f"\nNo se encontró una partida guardada para {nombre_consultado}.")
+            continue
+
+        jugador_id, nombre, escena = partida
+        break
+
+    nombre = input("\nIngresa tu nombre: ").strip()
+    while not nombre:
+        nombre = input("El nombre no puede estar vacío. Intenta nuevamente: ").strip()
+
+    cursor.execute("""
+    SELECT id
+    FROM jugador
+    WHERE nombre = ? COLLATE NOCASE
+    ORDER BY id DESC
+    LIMIT 1
+    """, (nombre,))
+    jugador_existente = cursor.fetchone()
+
+    if jugador_existente:
+        jugador_id = jugador_existente[0]
+        cursor.execute(
+            "DELETE FROM decisiones WHERE jugador_id = ?",
+            (jugador_id,)
+        )
+        cursor.execute(
+            "DELETE FROM inventario WHERE jugador_id = ?",
+            (jugador_id,)
+        )
+        cursor.execute("""
+        UPDATE jugador
+        SET nombre = ?, escena_actual = 'inicio'
+        WHERE id = ?
+        """, (nombre, jugador_id))
+    else:
+        cursor.execute("""
+        INSERT INTO jugador (nombre, escena_actual)
+        VALUES (?, 'inicio')
+        """, (nombre,))
+        jugador_id = cursor.lastrowid
+
+    conexion.commit()
+    escena = "inicio"
+    break
+
+if hay_partidas and opcion == "1":
+    if escena == "terminado":
+        print("\n¡Ya completaste esta aventura!")
+
+        opcion = input(
+            "\n1. Empezar una nueva aventura"
+            "\n2. Salir"
+            "\nElige: "
+        )
+
+        while opcion not in ["1", "2"]:
+            opcion = input("Elige 1 o 2: ")
+
+        if opcion == "2":
+            conexion.close()
+            exit()
+
+        nombre = input("\nIngresa tu nombre: ").strip()
+        while not nombre:
+            nombre = input(
+                "El nombre no puede estar vacío. Intenta nuevamente: "
+            ).strip()
         escena = "inicio"
 
-        cursor.execute("DELETE FROM inventario")
-        cursor.execute("DELETE FROM decisiones")
-
+        cursor.execute(
+            "DELETE FROM decisiones WHERE jugador_id = ?",
+            (jugador_id,)
+        )
+        cursor.execute(
+            "DELETE FROM inventario WHERE jugador_id = ?",
+            (jugador_id,)
+        )
         cursor.execute("""
         UPDATE jugador
         SET nombre = ?, escena_actual = ?
-        WHERE id = 1
-        """, (nombre, escena))
-
+        WHERE id = ?
+        """, (nombre, escena, jugador_id))
         conexion.commit()
-
-else:
-
-    nombre = input("\nIngresa tu nombre: ")
-    escena = "inicio"
-
-    cursor.execute("""
-    INSERT INTO jugador (id, nombre, escena_actual)
-    VALUES (1, ?, ?)
-    """, (nombre, escena))
-
-    conexion.commit()
-
+    else:
+        print("\nContinuando partida de", nombre)
 
 # ==========================================
 # 4. COMIENZO DE LA AVENTURA
@@ -189,7 +287,7 @@ while True:
 
     print("\n--------------------------------")
 
-    mostrar_inventario()
+    mostrar_inventario(jugador_id)
 
     # ======================================
     # ESCENA 1: INICIO
@@ -208,7 +306,7 @@ while True:
 
         eleccion = elegir_opcion(opciones)
 
-        guardar_decision(opciones[eleccion], escena)
+        guardar_decision(opciones[eleccion], escena, jugador_id)
 
         if eleccion == "1":
 
@@ -218,7 +316,7 @@ while True:
 
             escena = "refugio"
 
-        guardar_escena(escena)
+        guardar_escena(escena, jugador_id)
 
 
     # ======================================
@@ -237,7 +335,7 @@ while True:
 
         eleccion = elegir_opcion(opciones)
 
-        guardar_decision(opciones[eleccion], escena)
+        guardar_decision(opciones[eleccion], escena, jugador_id)
 
         if eleccion == "1":
 
@@ -247,7 +345,7 @@ while True:
 
             escena = "rio"
 
-        guardar_escena(escena)
+        guardar_escena(escena, jugador_id)
 
 
     # ======================================
@@ -267,15 +365,15 @@ while True:
 
         eleccion = elegir_opcion(opciones)
 
-        guardar_decision(opciones[eleccion], escena)
+        guardar_decision(opciones[eleccion], escena, jugador_id)
 
         if eleccion == "1":
 
-            agregar_objeto("Llave antigua")
+            agregar_objeto("Llave antigua", jugador_id)
 
         escena = "bosque"
 
-        guardar_escena(escena)
+        guardar_escena(escena, jugador_id)
 
 
     # ======================================
@@ -294,14 +392,14 @@ while True:
 
         eleccion = elegir_opcion(opciones)
 
-        guardar_decision(opciones[eleccion], escena)
+        guardar_decision(opciones[eleccion], escena, jugador_id)
 
         if eleccion == "1":
 
             cursor.execute("""
             SELECT * FROM inventario
-            WHERE objeto = 'Llave antigua'
-            """)
+            WHERE objeto = 'Llave antigua' AND jugador_id = ?
+            """, (jugador_id,))
 
             llave = cursor.fetchone()
 
@@ -317,7 +415,7 @@ while True:
 
             escena = "bosque"
 
-        guardar_escena(escena)
+        guardar_escena(escena, jugador_id)
 
 
     # ======================================
@@ -337,13 +435,13 @@ while True:
 
         eleccion = elegir_opcion(opciones)
 
-        guardar_decision(opciones[eleccion], escena)
+        guardar_decision(opciones[eleccion], escena, jugador_id)
 
         if eleccion == "1":
 
             escena = "bosque"
 
-            guardar_escena(escena)
+            guardar_escena(escena, jugador_id)
 
         else:
 
@@ -364,7 +462,7 @@ while True:
         print("Detrás de ella encuentras un tesoro.")
         print("\n¡Has ganado la aventura!")
 
-        guardar_escena("terminado")
+        guardar_escena("terminado", jugador_id)
 
         break
 
@@ -383,7 +481,7 @@ while True:
         print("No tienes la llave para abrirla.")
         print("No puedes continuar.")
 
-        guardar_escena("terminado")
+        guardar_escena("terminado", jugador_id)
 
         break
 
@@ -399,7 +497,8 @@ print("================================")
 cursor.execute("""
 SELECT decision, escena
 FROM decisiones
-""")
+WHERE jugador_id = ?
+""", (jugador_id,))
 
 historial = cursor.fetchall()
 
@@ -423,3 +522,4 @@ conexion.close()
 
 print("\nTu progreso fue guardado.")
 print("¡Hasta la próxima!")
+
